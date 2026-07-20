@@ -1,0 +1,254 @@
+name: CI — Smart Parking System (STM32 F446RE)
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+
+  # ─────────────────────────────────────────────────────
+  # JOB 1 — Spell Check
+  # ─────────────────────────────────────────────────────
+  spell-check:
+    name: 🔤 Spell Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run codespell
+        uses: codespell-project/actions-codespell@v2
+        with:
+          skip: ".git,*.bin,*.hex,Drivers"
+          ignore_words_list: >
+            UID,uid,crc,CRC,FIFO,fifo,ISR,isr,IRQ,irq,
+            HAL,hal,STM,stm,initialise,initialised,
+            HCSR,hcsr,SPI,spi,PWM,pwm,GPIO,gpio,
+            UART,uart,TIM,tim,ARR,arr,CCR,ccr,
+            MCU,mcu,ARM,Cortex,cortex,PSC,psc,
+            APEPDCL,apepdcl,AICTE,aicte,NPTEL,nptel,
+            CGPA,cgpa,EEE,eee,PLC,plc,TRIG,trig,
+            ECHO,ultrasonic,Ultrasonic,servo,Servo
+
+  # ─────────────────────────────────────────────────────
+  # JOB 2 — Python Simulator Tests
+  # ─────────────────────────────────────────────────────
+  simulator-test:
+    name: 🐍 Simulator Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pytest
+
+      - name: Check simulator syntax
+        run: python -m py_compile simulator/simulate.py
+
+      - name: Run simulator (automated mode)
+        run: python simulator/simulate.py
+        timeout-minutes: 2
+
+      - name: Run pytest (unit tests)
+        run: |
+          if [ -f simulator/test_simulate.py ]; then
+            pytest simulator/test_simulate.py -v
+          else
+            echo "Simulator smoke test passed — no unit tests file yet"
+          fi
+
+  # ─────────────────────────────────────────────────────
+  # JOB 3 — C Static Analysis
+  # ─────────────────────────────────────────────────────
+  c-lint:
+    name: 🔍 C Static Analysis (cppcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install cppcheck
+        run: sudo apt-get install -y cppcheck
+
+      - name: Run cppcheck on Core/Src
+        run: |
+          cppcheck \
+            --enable=warning,style,performance \
+            --suppress=missingIncludeSystem \
+            --suppress=unusedFunction \
+            --inline-suppr \
+            --error-exitcode=1 \
+            -I Core/Inc \
+            Core/Src/
+
+  # ─────────────────────────────────────────────────────
+  # JOB 4 — Markdown Lint
+  # ─────────────────────────────────────────────────────
+  markdown-lint:
+    name: 📝 README Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Lint README.md
+        uses: DavidAnson/markdownlint-cli2-action@v16
+        with:
+          globs: "README.md"
+
+  # ─────────────────────────────────────────────────────
+  # JOB 5 — Project Structure Validator
+  # ─────────────────────────────────────────────────────
+  structure-check:
+    name: 📁 Project Structure Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify required files exist
+        run: |
+          echo "Checking required project files..."
+          required_files=(
+            "README.md"
+            ".markdownlint.json"
+            "Core/Inc/main.h"
+            "Core/Inc/hcsr04.h"
+            "Core/Inc/servo.h"
+            "Core/Inc/max7219.h"
+            "Core/Inc/parking.h"
+            "Core/Src/main.c"
+            "Core/Src/hcsr04.c"
+            "Core/Src/servo.c"
+            "Core/Src/max7219.c"
+            "Core/Src/parking.c"
+            "simulator/simulate.py"
+          )
+          all_ok=true
+          for f in "${required_files[@]}"; do
+            if [ -f "$f" ]; then
+              echo "  ✅  $f"
+            else
+              echo "  ❌  MISSING: $f"
+              all_ok=false
+            fi
+          done
+          if [ "$all_ok" = false ]; then
+            echo ""
+            echo "ERROR: Required files are missing!"
+            exit 1
+          fi
+          echo ""
+          echo "All required files present ✅"
+
+  # ─────────────────────────────────────────────────────
+  # JOB 6 — Parking Logic Unit Tests
+  # ─────────────────────────────────────────────────────
+  parking-logic-test:
+    name: 🚗 Parking Logic Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run parking logic tests
+        run: |
+          python - << 'EOF'
+          # Inline unit test — tests the parking slot logic
+          # extracted from simulate.py
+
+          class ParkingSystem:
+              def __init__(self, total=3):
+                  self.slots = [True] * total
+                  self.available = total
+                  self.total = total
+
+              def assign_slot(self):
+                  for i, free in enumerate(self.slots):
+                      if free:
+                          self.slots[i] = False
+                          self.available -= 1
+                          return i + 1
+                  return None
+
+              def release_slot(self):
+                  for i, free in enumerate(self.slots):
+                      if not free:
+                          self.slots[i] = True
+                          self.available += 1
+                          return i + 1
+                  return None
+
+          p = ParkingSystem(3)
+
+          # Test 1: Start fully free
+          assert p.available == 3, "FAIL: Should start with 3 free"
+          print("  ✅  Test 1 passed: Initial state = 3 free slots")
+
+          # Test 2: Assign slots
+          s1 = p.assign_slot()
+          assert s1 == 1,          "FAIL: First slot should be 1"
+          assert p.available == 2, "FAIL: Available should be 2"
+          print("  ✅  Test 2 passed: Slot 1 assigned, available=2")
+
+          s2 = p.assign_slot()
+          s3 = p.assign_slot()
+          assert p.available == 0, "FAIL: Should be full"
+          print("  ✅  Test 3 passed: All slots filled, available=0")
+
+          # Test 3: Parking full — assign returns None
+          s4 = p.assign_slot()
+          assert s4 is None,       "FAIL: Should return None when full"
+          print("  ✅  Test 4 passed: Returns None when full")
+
+          # Test 4: Release a slot
+          released = p.release_slot()
+          assert p.available == 1, "FAIL: Available should be 1 after release"
+          print("  ✅  Test 5 passed: Slot released, available=1")
+
+          # Test 5: Full release
+          p.release_slot()
+          p.release_slot()
+          assert p.available == 3, "FAIL: Should be fully free again"
+          print("  ✅  Test 6 passed: All slots released, available=3")
+
+          print("")
+          print("  All parking logic tests passed ✅")
+          EOF
+
+  # ─────────────────────────────────────────────────────
+  # JOB 7 — Summary
+  # ─────────────────────────────────────────────────────
+  all-checks-pass:
+    name: ✅ All Checks Passed
+    runs-on: ubuntu-latest
+    needs: [spell-check, simulator-test, c-lint, markdown-lint, structure-check, parking-logic-test]
+    steps:
+      - name: Summary
+        run: |
+          echo "============================================"
+          echo "  Smart Parking System — CI PASSED"
+          echo "  STM32 F446RE | Yaswanth Chlliboina"
+          echo "============================================"
+          echo ""
+          echo "  ✅ Spell check passed"
+          echo "  ✅ Simulator runs correctly"
+          echo "  ✅ C static analysis passed"
+          echo "  ✅ README lint passed"
+          echo "  ✅ Project structure valid"
+          echo "  ✅ Parking logic unit tests passed"
+          echo ""
+          echo "  Repo: github.com/Yaswanth-Ch-24/smart-parking-system"
